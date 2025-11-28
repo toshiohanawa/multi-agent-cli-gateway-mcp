@@ -2,15 +2,23 @@
 FastAPI wrapper for running the `codex` CLI via HTTP.
 """
 
+import os
 import subprocess
-from typing import List, Literal
+import time
+from typing import Dict, List, Literal
 
-from fastapi import FastAPI, HTTPException
+from fastapi import Depends, FastAPI, Header, HTTPException, Request
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 
 CLI_COMMAND = ["codex", "exec"]
-TIMEOUT_SECONDS = 120
+TIMEOUT_SECONDS = int(os.getenv("CLI_TIMEOUT_SECONDS", "60"))  # デフォルト60秒（CLI処理に時間がかかる場合があるため）
+AUTH_TOKEN = os.getenv("WRAPPER_AUTH_TOKEN")
+MAX_BODY_BYTES = 16 * 1024  # 16KB
+RATE_LIMIT_WINDOW = 60
+RATE_LIMIT_MAX_REQUESTS = 30
+ALLOWED_ENV_VARS = {"PATH", "HOME", "SHELL", "LANG", "LC_ALL", "TERM"}
+_rate_log: Dict[str, List[float]] = {}
 
 
 class HistoryItem(BaseModel):
@@ -30,8 +38,47 @@ class ChatResponse(BaseModel):
 app = FastAPI(title="Codex CLI Wrapper", version="0.1.0")
 
 
+def _build_safe_env() -> dict:
+    env = {k: v for k, v in os.environ.items() if k in ALLOWED_ENV_VARS}
+    env.setdefault("PATH", os.environ.get("PATH", ""))
+    return env
+
+
+def _verify_token(token: str = Header(default=None, alias="X-Auth-Token")) -> None:
+    if AUTH_TOKEN is None:
+        return
+    if token != AUTH_TOKEN:
+        raise HTTPException(status_code=401, detail="unauthorized")
+
+
+@app.middleware("http")
+async def rate_and_size_guard(request: Request, call_next):
+    client_ip = request.client.host if request.client else "unknown"
+    now = time.time()
+    entries = _rate_log.setdefault(client_ip, [])
+    entries[:] = [ts for ts in entries if now - ts < RATE_LIMIT_WINDOW]
+    if len(entries) >= RATE_LIMIT_MAX_REQUESTS:
+        raise HTTPException(status_code=429, detail="rate limit exceeded")
+    entries.append(now)
+
+    content_length = request.headers.get("content-length")
+    if content_length:
+        try:
+            if int(content_length) > MAX_BODY_BYTES:
+                raise HTTPException(status_code=413, detail="request body too large")
+        except ValueError:
+            raise HTTPException(status_code=400, detail="invalid content-length header")
+    else:
+        body = await request.body()
+        if len(body) > MAX_BODY_BYTES:
+            raise HTTPException(status_code=413, detail="request body too large")
+        request._body = body  # cache for downstream handlers
+
+    return await call_next(request)
+
+
 @app.post("/codex", response_model=ChatResponse)
-async def call_codex(body: ChatRequest) -> JSONResponse:
+async def call_codex(body: ChatRequest, _: None = Depends(_verify_token)) -> JSONResponse:
     """Execute the codex CLI and return its stdout."""
     try:
         result = subprocess.run(
@@ -41,6 +88,7 @@ async def call_codex(body: ChatRequest) -> JSONResponse:
             capture_output=True,
             timeout=TIMEOUT_SECONDS,
             check=False,
+            env=_build_safe_env(),
         )
     except subprocess.TimeoutExpired as exc:
         raise HTTPException(status_code=504, detail=f"codex CLI timed out after {TIMEOUT_SECONDS}s") from exc
@@ -62,4 +110,9 @@ async def health() -> dict:
 if __name__ == "__main__":
     import uvicorn
 
-    uvicorn.run("codex_wrapper:app", host="0.0.0.0", port=9001, reload=False)
+    uvicorn.run(
+        "codex_wrapper:app",
+        host=os.getenv("WRAPPER_BIND_HOST", "127.0.0.1"),
+        port=int(os.getenv("WRAPPER_BIND_PORT", "9001")),
+        reload=False,
+    )

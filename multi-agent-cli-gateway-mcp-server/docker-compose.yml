@@ -2,7 +2,7 @@ services:
   mcp_server:
     build:
       context: ..
-      dockerfile: mcp-server/Dockerfile
+      dockerfile: multi-agent-cli-gateway-mcp-server/Dockerfile
     container_name: multi-agent-cli-gateway-mcp
     ports:
       - "8080:8080"

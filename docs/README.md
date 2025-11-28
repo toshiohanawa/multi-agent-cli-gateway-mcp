@@ -4,16 +4,17 @@
 
 ## 📚 ドキュメント一覧
 
+### セットアップ・使用方法
+
+- **SETUP.md**: CLIのインストールとCursorでのMCP設定、サービスの起動方法
+- **USAGE.md**: MCPツールの使用方法と複数プロジェクトでの使用ガイド
+- **SECURITY.md**: セキュリティ設定ガイドと実装詳細
+- **REMOTE_ACCESS.md**: 他のマシンやDockerコンテナからアクセスする方法
+
 ### テスト・実装関連
 
 - **TEST_RESULTS.md**: テスト結果レポート（すべてのテストが成功）
 - **IMPLEMENTATION_STATUS.md**: 実装進捗レポート（100%完了）
-
-### セットアップ・使用方法
-
-- **CLI_INSTALLATION.md**: Codex CLIとClaude CLIのインストール手順
-- **CURSOR_MCP_SETUP.md**: CursorでのMCPソース追加手順
-- **USAGE_EXAMPLE.md**: MCPツールの使用例とトラブルシューティング
 
 ## 📖 主要ドキュメント
 
@@ -26,9 +27,9 @@
 ## 🔍 ドキュメントの使い方
 
 1. **初めて使う場合**: `QUICKSTART.md` から始める
-2. **CLIのインストール**: `CLI_INSTALLATION.md` を参照
-3. **Cursorの設定**: `CURSOR_MCP_SETUP.md` を参照
-4. **使用例**: `USAGE_EXAMPLE.md` を参照
-5. **テスト結果**: `TEST_RESULTS.md` を参照
-6. **実装詳細**: `IMPLEMENTATION_STATUS.md` を参照
-
+2. **セットアップ**: `SETUP.md` を参照
+3. **使用方法**: `USAGE.md` を参照
+4. **セキュリティ設定**: `SECURITY.md` を参照
+5. **リモートアクセス**: `REMOTE_ACCESS.md` を参照
+6. **テスト結果**: `TEST_RESULTS.md` を参照
+7. **実装詳細**: `IMPLEMENTATION_STATUS.md` を参照

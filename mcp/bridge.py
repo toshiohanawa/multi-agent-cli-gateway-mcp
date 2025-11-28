@@ -2,17 +2,25 @@
 Bridge MCP server exposing debate tools that call out to host CLI wrappers.
 """
 
+import os
+import time
+import uuid
 from dataclasses import dataclass, field
 from typing import Dict, List, Literal, Optional
 
 import requests
-from fastapi import FastAPI, HTTPException
+from fastapi import Depends, FastAPI, Header, HTTPException, Request
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 
 CODEX_URL = "http://host.docker.internal:9001/codex"
 CLAUDE_URL = "http://host.docker.internal:9002/claude"
-HTTP_TIMEOUT = 120
+HTTP_TIMEOUT = int(os.getenv("HTTP_TIMEOUT_SECONDS", "60"))  # デフォルト60秒（CLI処理に時間がかかる場合があるため）
+AUTH_TOKEN = os.getenv("MCP_AUTH_TOKEN")
+MAX_BODY_BYTES = 32 * 1024  # 32KB
+RATE_LIMIT_WINDOW = 60
+RATE_LIMIT_MAX_REQUESTS = 20
+_rate_log: Dict[str, List[float]] = {}
 
 
 Role = Literal["user", "assistant", "system"]
@@ -41,13 +49,15 @@ class Turn:
 class DebateSession:
     active: bool = False
     history: List[Turn] = field(default_factory=list)
+    user_id: Optional[str] = None
 
 
-session = DebateSession()
+# Session storage: user_id -> DebateSession
+_sessions: Dict[str, DebateSession] = {}
 
 
 class StartDebateRequest(BaseModel):
-    initial_prompt: str = Field(..., min_length=1)
+    initial_prompt: str = Field(..., min_length=1, max_length=8192)  # Limit prompt size
 
 
 class Decision(BaseModel):
@@ -81,10 +91,58 @@ class StatusResponse(BaseModel):
 app = FastAPI(title="AI Debate MCP Bridge", version="1.0.0")
 
 
-def call_model(url: str, prompt: str) -> str:
+def _verify_token(token: str = Header(default=None, alias="X-Auth-Token")) -> None:
+    """Verify authentication token if AUTH_TOKEN is set."""
+    if AUTH_TOKEN is None:
+        return
+    if token != AUTH_TOKEN:
+        raise HTTPException(status_code=401, detail="unauthorized")
+
+
+def _get_user_id(request: Request) -> str:
+    """Get or create user ID from request header or generate new one."""
+    user_id_header = request.headers.get("X-User-ID")
+    if user_id_header:
+        return user_id_header
+    # Generate a new user ID if not provided
+    return str(uuid.uuid4())
+
+
+@app.middleware("http")
+async def rate_and_size_guard(request: Request, call_next):
+    """Rate limiting and request size checking middleware."""
+    client_ip = request.client.host if request.client else "unknown"
+    now = time.time()
+    entries = _rate_log.setdefault(client_ip, [])
+    entries[:] = [ts for ts in entries if now - ts < RATE_LIMIT_WINDOW]
+    if len(entries) >= RATE_LIMIT_MAX_REQUESTS:
+        raise HTTPException(status_code=429, detail="rate limit exceeded")
+    entries.append(now)
+
+    content_length = request.headers.get("content-length")
+    if content_length:
+        try:
+            if int(content_length) > MAX_BODY_BYTES:
+                raise HTTPException(status_code=413, detail="request body too large")
+        except ValueError:
+            raise HTTPException(status_code=400, detail="invalid content-length header")
+    else:
+        body = await request.body()
+        if len(body) > MAX_BODY_BYTES:
+            raise HTTPException(status_code=413, detail="request body too large")
+        request._body = body  # cache for downstream handlers
+
+    return await call_next(request)
+
+
+def call_model(url: str, prompt: str, auth_token: Optional[str] = None) -> str:
+    """Call model wrapper with optional authentication."""
     payload = {"prompt": prompt, "history": []}
+    headers = {}
+    if auth_token:
+        headers["X-Auth-Token"] = auth_token
     try:
-        resp = requests.post(url, json=payload, timeout=HTTP_TIMEOUT)
+        resp = requests.post(url, json=payload, headers=headers, timeout=HTTP_TIMEOUT)
         resp.raise_for_status()
     except requests.exceptions.RequestException as exc:
         raise HTTPException(status_code=502, detail=f"failed to reach model wrapper: {exc}") from exc
@@ -116,13 +174,26 @@ def build_next_prompt(decision: Decision, last_turn: Turn) -> str:
 
 
 @app.post("/start_debate", response_model=StatusResponse)
-async def start_debate(body: StartDebateRequest) -> JSONResponse:
-    if session.active:
+async def start_debate(
+    body: StartDebateRequest,
+    request: Request,
+    _: None = Depends(_verify_token),
+) -> JSONResponse:
+    """Start a new debate session for the user."""
+    user_id = _get_user_id(request)
+    session = _sessions.get(user_id)
+
+    if session and session.active:
         raise HTTPException(status_code=400, detail="debate session already active")
 
+    if session is None:
+        session = DebateSession(user_id=user_id)
+        _sessions[user_id] = session
+
     prompt = body.initial_prompt
-    codex_output = call_model(CODEX_URL, prompt)
-    claude_output = call_model(CLAUDE_URL, prompt)
+    wrapper_auth = os.getenv("WRAPPER_AUTH_TOKEN")
+    codex_output = call_model(CODEX_URL, prompt, auth_token=wrapper_auth)
+    claude_output = call_model(CLAUDE_URL, prompt, auth_token=wrapper_auth)
 
     turn = Turn(user_instruction=prompt, codex_output=codex_output, claude_output=claude_output)
     session.history.append(turn)
@@ -138,19 +209,29 @@ async def start_debate(body: StartDebateRequest) -> JSONResponse:
                 "claude_output": turn.claude_output,
             },
         },
+        headers={"X-User-ID": user_id},
     )
 
 
 @app.post("/step", response_model=StatusResponse)
-async def step(body: StepRequest) -> JSONResponse:
-    if not session.active or not session.history:
+async def step(
+    body: StepRequest,
+    request: Request,
+    _: None = Depends(_verify_token),
+) -> JSONResponse:
+    """Advance the debate session for the user."""
+    user_id = _get_user_id(request)
+    session = _sessions.get(user_id)
+
+    if not session or not session.active or not session.history:
         raise HTTPException(status_code=400, detail="no active session")
 
     last_turn = session.history[-1]
     next_prompt = build_next_prompt(body.decision, last_turn)
 
-    codex_output = call_model(CODEX_URL, next_prompt)
-    claude_output = call_model(CLAUDE_URL, next_prompt)
+    wrapper_auth = os.getenv("WRAPPER_AUTH_TOKEN")
+    codex_output = call_model(CODEX_URL, next_prompt, auth_token=wrapper_auth)
+    claude_output = call_model(CLAUDE_URL, next_prompt, auth_token=wrapper_auth)
 
     turn = Turn(user_instruction=next_prompt, codex_output=codex_output, claude_output=claude_output)
     session.history.append(turn)
@@ -165,26 +246,53 @@ async def step(body: StepRequest) -> JSONResponse:
                 "claude_output": turn.claude_output,
             },
         },
+        headers={"X-User-ID": user_id},
     )
 
 
 @app.post("/stop", response_model=StatusResponse)
-async def stop() -> JSONResponse:
-    if not session.active:
+async def stop(
+    request: Request,
+    _: None = Depends(_verify_token),
+) -> JSONResponse:
+    """Stop the debate session for the user."""
+    user_id = _get_user_id(request)
+    session = _sessions.get(user_id)
+
+    if not session or not session.active:
         raise HTTPException(status_code=400, detail="no active session")
 
     session.active = False
     session.history.clear()
 
-    return JSONResponse(status_code=200, content={"status": "stopped"})
+    return JSONResponse(
+        status_code=200,
+        content={"status": "stopped"},
+        headers={"X-User-ID": user_id},
+    )
 
 
 @app.get("/health")
-async def health() -> dict:
-    return {"status": "ok", "active": session.active, "turns": len(session.history)}
+async def health(request: Request) -> dict:
+    """Health check endpoint (no auth required)."""
+    user_id = _get_user_id(request)
+    session = _sessions.get(user_id)
+    if session:
+        return {
+            "status": "ok",
+            "active": session.active,
+            "turns": len(session.history),
+            "user_id": user_id,
+        }
+    return {"status": "ok", "active": False, "turns": 0}
 
 
 if __name__ == "__main__":
     import uvicorn
 
-    uvicorn.run("mcp.bridge:app", host="0.0.0.0", port=8080, reload=False)
+    uvicorn.run(
+        "mcp.bridge:app",
+        host=os.getenv("MCP_BIND_HOST", "127.0.0.1"),
+        port=int(os.getenv("MCP_BIND_PORT", "8080")),
+        reload=False,
+    )

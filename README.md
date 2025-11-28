@@ -158,11 +158,12 @@ python test_mcp_bridge.py
 ## ドキュメント
 
 - **クイックスタート**: `QUICKSTART.md`
+- **セットアップ**: `docs/SETUP.md` 📦 **CLIインストールとCursor設定**
+- **使用方法**: `docs/USAGE.md` 📖 **MCPツールの使い方と複数プロジェクトでの使用**
+- **セキュリティ設定**: `docs/SECURITY.md` ⚠️ **重要**
+- **リモートアクセス**: `docs/REMOTE_ACCESS.md` 📡 **他のマシン/Dockerからアクセス**
 - **テスト結果**: `docs/TEST_RESULTS.md`
 - **実装状況**: `docs/IMPLEMENTATION_STATUS.md`
-- **CLIインストール**: `docs/CLI_INSTALLATION.md`
-- **Cursor設定**: `docs/CURSOR_MCP_SETUP.md`
-- **使用例**: `docs/USAGE_EXAMPLE.md`
 - **仕様書**: `masterplan.md`
 
 ## 使用例（Cursor経由）
