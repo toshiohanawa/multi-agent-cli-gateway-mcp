@@ -1,0 +1,13 @@
+services:
+  mcp_server:
+    build:
+      context: ..
+      dockerfile: mcp-server/Dockerfile
+    container_name: multi-agent-cli-gateway-mcp
+    ports:
+      - "8080:8080"
+    volumes:
+      - ../mcp:/app/mcp
+      - ../host_wrappers:/app/host_wrappers
+    environment:
+      - PYTHONUNBUFFERED=1

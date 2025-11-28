@@ -1,0 +1,48 @@
+{
+  "name": "ai_debate_bridge",
+  "version": "1.0.0",
+  "description": "MCP tools that coordinate Codex and ClaudeCode debate sessions.",
+  "tools": [
+    {
+      "name": "start_debate",
+      "description": "Start a new debate session between Codex and ClaudeCode using the provided initial prompt.",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "initial_prompt": { "type": "string", "description": "The initial topic or request." }
+        },
+        "required": ["initial_prompt"]
+      }
+    },
+    {
+      "name": "step",
+      "description": "Advance the debate using the decision about which approach to follow.",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "decision": {
+            "type": "object",
+            "properties": {
+              "type": {
+                "type": "string",
+                "enum": ["adopt_codex", "adopt_claude", "custom_instruction"]
+              },
+              "custom_text": { "type": "string", "description": "Required when type=custom_instruction." }
+            },
+            "required": ["type"]
+          }
+        },
+        "required": ["decision"]
+      }
+    },
+    {
+      "name": "stop",
+      "description": "Stop the current debate session and clear state.",
+      "input_schema": {
+        "type": "object",
+        "properties": {},
+        "required": []
+      }
+    }
+  ]
+}
