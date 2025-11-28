@@ -26,23 +26,28 @@
 - **ステータス**: ✅ 200 OK
 - **状態**: `{'status': 'ok', 'active': False, 'turns': 0}`
 
-#### 2. start_debate
+#### 2. start_debate（交互応答）
 - **ステータス**: ✅ 成功
-- **動作**: CodexとClaudeの両方から応答を取得
+- **動作**: Codexが最初に応答 → ClaudeがCodexの応答に対して応答
 - **テストプロンプト**: "PythonでFizzBuzzを実装してください。"
+- **交互応答**: Codex → Claude の順で応答
 
-#### 3. step (adopt_codex)
+#### 3. step (adopt_codex) - 交互応答
 - **ステータス**: ✅ 成功
 - **動作**: Codexの方針を採用して次のターンに進む
+- **交互応答**: Codex → Claude → Codex → ... の順で交互に応答
+- **トークン節約**: 各ターンで1つのモデルだけが応答（約50%削減）
 
-#### 4. step (adopt_claude)
+#### 4. step (adopt_claude) - 交互応答
 - **ステータス**: ✅ 成功
 - **動作**: Claudeの方針を採用して次のターンに進む
+- **交互応答**: Codex → Claude → Codex → ... の順で交互に応答
 
-#### 5. step (custom_instruction)
+#### 5. step (custom_instruction) - 交互応答
 - **ステータス**: ✅ 成功
 - **動作**: カスタム指示で次のターンに進む
 - **テスト指示**: "より効率的な実装を提案してください。"
+- **交互応答**: 前のターンのもう一方のモデルの応答を参照
 
 #### 6. stop
 - **ステータス**: ✅ 成功
@@ -102,12 +107,38 @@
    ✅ ALL TESTS PASSED
    ```
 
+## 🔄 交互応答実装のテスト結果
+
+### 交互応答の動作確認
+
+- ✅ **start_debate**: Codex → Claude の順で応答
+- ✅ **step**: Codex → Claude → Codex → ... の順で交互に応答
+- ✅ **トークン節約**: 各ターンで約50%のトークン削減
+- ✅ **前のターンの参照**: もう一方のモデルの前回の応答を参照して応答
+
+### テスト結果
+
+```
+ターン1 (start_debate):
+  Codex: "PythonでFizzBuzzを実装します..."
+  Claude: "Codexの実装を見ました。良い点は..."
+
+ターン2 (step):
+  Codex: "Claudeの指摘を受けて、より効率的な実装を提案します..."
+  responder: "codex", next_responder: "claude"
+
+ターン3 (step):
+  Claude: "Codexの改善案を評価します..."
+  responder: "claude", next_responder: "codex"
+```
+
 ## 📝 結論
 
 **すべてのコンポーネントが正常に動作しています！**
 
 - ✅ ホストラッパー（Codex/Claude）: 正常動作
 - ✅ MCPブリッジ: 正常動作
+- ✅ 交互応答実装: 正常動作（トークン節約）
 - ✅ 統合テスト: すべて成功
 - ✅ エンドツーエンドテスト: 成功
 - ✅ CursorでのMCP接続: 成功

@@ -46,11 +46,13 @@ masterplan.mdの仕様書と実装状況を照合した結果です。
 
 #### ✅ bridge.py
 - **データモデル**: Message, ModelOutput, Turn, DebateSession ✅
-- **セッション管理**: グローバルシングルトン ✅
+- **セッション管理**: ユーザー単位のセッション分離 ✅
+- **交互応答**: Codex → Claude → Codex → ... の順で交互に応答 ✅
+- **トークン節約**: 各ターンで1つのモデルだけが応答（約50%削減）✅
 - **HTTPクライアント**: requests使用、host.docker.internal経由 ✅
 - **MCPツール**:
-  - `start_debate` ✅
-  - `step` ✅
+  - `start_debate` ✅（Codex → Claude の順で応答）
+  - `step` ✅（交互応答）
   - `stop` ✅
 - **エラーハンドリング**: セッション状態チェック、HTTPエラー処理 ✅
 - **ヘルスチェック**: `GET /health` ✅
@@ -131,6 +133,23 @@ masterplan.mdの仕様書と実装状況を照合した結果です。
 - ✅ エンドツーエンドテスト: 成功
 - ✅ CursorでのMCP接続: 成功
 - ✅ 実際の議論セッション: 成功
+
+## 🔄 交互応答実装（追加機能）
+
+### 実装内容
+
+- **Turn構造の変更**: `Optional[str]`で交互応答をサポート ✅
+- **DebateSessionに`next_responder`フィールドを追加**: 次の応答者を追跡 ✅
+- **start_debate**: Codex → Claude の順で応答 ✅
+- **step**: 交互に1つのモデルだけが応答 ✅
+- **build_next_prompt**: 前のターンの応答を参照 ✅
+
+### トークン節約効果
+
+- **以前の実装**: 各ターンで両方のモデルが同時に応答（2倍のトークン）
+- **現在の実装**: 各ターンで1つのモデルだけが応答（約50%のトークン削減）
+
+詳細は `docs/ALTERNATING_RESPONSE.md` を参照してください。
 
 ## 🎯 実装完了
 
