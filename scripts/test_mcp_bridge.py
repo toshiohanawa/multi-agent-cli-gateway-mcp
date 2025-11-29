@@ -3,8 +3,10 @@ MCPブリッジの動作確認用スクリプト
 """
 import requests
 import sys
+import uuid
 
 MCP_URL = "http://localhost:8080"
+USER_ID = str(uuid.uuid4())  # テスト用の固定ユーザーID
 
 
 def check_health() -> bool:
@@ -35,6 +37,7 @@ def test_start_debate(prompt: str = "PythonでFizzBuzzを実装してくださ�
         resp = requests.post(
             f"{MCP_URL}/start_debate",
             json={"initial_prompt": prompt},
+            headers={"X-User-ID": USER_ID},
             timeout=250
         )
         if resp.status_code == 200:
@@ -43,8 +46,15 @@ def test_start_debate(prompt: str = "PythonでFizzBuzzを実装してくださ�
             if "turn" in data:
                 turn = data["turn"]
                 print(f"  ユーザー指示: {turn.get('user_instruction', '')[:80]}...")
-                print(f"  Codex出力: {turn.get('codex_output', '')[:80]}...")
-                print(f"  Claude出力: {turn.get('claude_output', '')[:80]}...")
+                codex_out = turn.get('codex_output') or ''
+                claude_out = turn.get('claude_output') or ''
+                responder = turn.get('responder', 'unknown')
+                next_responder = turn.get('next_responder', 'unknown')
+                print(f"  応答者: {responder}, 次: {next_responder}")
+                if codex_out:
+                    print(f"  Codex出力: {codex_out[:80]}...")
+                if claude_out:
+                    print(f"  Claude出力: {claude_out[:80]}...")
             return True
         else:
             print(f"✗ start_debate 失敗: HTTP {resp.status_code}, {resp.text}")
@@ -64,6 +74,7 @@ def test_step(decision_type: str = "adopt_codex", custom_text: str = None) -> bo
         resp = requests.post(
             f"{MCP_URL}/step",
             json={"decision": decision},
+            headers={"X-User-ID": USER_ID},
             timeout=250
         )
         if resp.status_code == 200:
@@ -72,8 +83,15 @@ def test_step(decision_type: str = "adopt_codex", custom_text: str = None) -> bo
             if "turn" in data:
                 turn = data["turn"]
                 print(f"  ユーザー指示: {turn.get('user_instruction', '')[:80]}...")
-                print(f"  Codex出力: {turn.get('codex_output', '')[:80]}...")
-                print(f"  Claude出力: {turn.get('claude_output', '')[:80]}...")
+                codex_out = turn.get('codex_output') or ''
+                claude_out = turn.get('claude_output') or ''
+                responder = turn.get('responder', 'unknown')
+                next_responder = turn.get('next_responder', 'unknown')
+                print(f"  応答者: {responder}, 次: {next_responder}")
+                if codex_out:
+                    print(f"  Codex出力: {codex_out[:80]}...")
+                if claude_out:
+                    print(f"  Claude出力: {claude_out[:80]}...")
             return True
         else:
             print(f"✗ step 失敗: HTTP {resp.status_code}, {resp.text}")
@@ -86,7 +104,11 @@ def test_step(decision_type: str = "adopt_codex", custom_text: str = None) -> bo
 def test_stop() -> bool:
     """stopエンドポイントをテスト"""
     try:
-        resp = requests.post(f"{MCP_URL}/stop", timeout=10)
+        resp = requests.post(
+            f"{MCP_URL}/stop",
+            headers={"X-User-ID": USER_ID},
+            timeout=10
+        )
         if resp.status_code == 200:
             data = resp.json()
             print(f"✓ stop 成功: {data}")

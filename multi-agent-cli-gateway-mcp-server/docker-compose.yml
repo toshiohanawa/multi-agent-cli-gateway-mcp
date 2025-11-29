@@ -1,3 +1,5 @@
+name: multi-agent-cli-gateway-mcp
+
 services:
   mcp_server:
     build:

@@ -72,11 +72,14 @@ python claude_wrapper.py   # ポート 9002
 
 #### Docker 上の MCP ブリッジ起動
 
+**Docker Composeプロジェクト名**: `multi-agent-cli-gateway-mcp`（`docker-compose.yml`の`name`フィールドで設定）
+
 ### 自動起動（推奨 - ホストラッパーも自動起動）
 ```bash
 cd multi-agent-cli-gateway-mcp-server
 ./compose-up.sh
 # → ホストラッパーとDockerコンテナが自動的に起動します
+# → Dockerプロジェクト名: multi-agent-cli-gateway-mcp
 ```
 
 ### 手動起動
@@ -85,9 +88,11 @@ cd multi-agent-cli-gateway-mcp-server
 docker build -t ai-debate-mcp .
 docker compose up -d
 # → http://localhost:8080 で起動
+# → Dockerプロジェクト名: multi-agent-cli-gateway-mcp
 # 注意: ホストラッパーは別途起動が必要です
 ```
-ボリュームマウントしているので、ローカルで `mcp/` を編集するとコンテナ側に即時反映される。
+
+**注意**: ボリュームマウントしているので、ローカルで `mcp/` を編集するとコンテナ側に即時反映されます。
 
 ## 処理フロー
 
@@ -206,6 +211,7 @@ docker compose up -d
 ## MCP エンドポイント（HTTP）
 
 - `POST /start_debate` — `{ "initial_prompt": "..." }` を渡し、Codex → Claude の順で交互に応答を返す
+  - オプション: `mode` を `"critique"`（Codex=提案役 / Claude=批判役）または `"consensus"`（Codex=提案役 / Claude=合意形成・統合役）にすると役割付きで議論
 - `POST /step` — `{ "decision": { "type": "adopt_codex" | "adopt_claude" | "custom_instruction", "custom_text": "..." } }`
   - 直前のターンをもとに次の入力を組み立て、**交互に1つのモデルだけが応答**（トークン節約）
 - `POST /stop` — セッション終了（状態クリア）

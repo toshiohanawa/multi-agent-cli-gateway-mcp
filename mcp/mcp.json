@@ -9,7 +9,12 @@
       "input_schema": {
         "type": "object",
         "properties": {
-          "initial_prompt": { "type": "string", "description": "The initial topic or request." }
+          "initial_prompt": { "type": "string", "description": "The initial topic or request." },
+          "mode": {
+            "type": "string",
+            "enum": ["default", "critique", "consensus"],
+            "description": "Optional debate style. 'critique' (proposer vs critic) or 'consensus' (proposal vs synthesis)."
+          }
         },
         "required": ["initial_prompt"]
       }

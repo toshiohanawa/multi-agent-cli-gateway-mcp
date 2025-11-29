@@ -5,6 +5,7 @@ Bridge MCP server exposing debate tools that call out to host CLI wrappers.
 import os
 import time
 import uuid
+import logging
 from dataclasses import dataclass, field
 from typing import Dict, List, Literal, Optional
 
@@ -13,17 +14,38 @@ from fastapi import Depends, FastAPI, Header, HTTPException, Request
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 
-CODEX_URL = "http://host.docker.internal:9001/codex"
-CLAUDE_URL = "http://host.docker.internal:9002/claude"
+logging.basicConfig(level=os.getenv("LOG_LEVEL", "INFO"))
+logger = logging.getLogger("mcp.bridge")
+
+CODEX_URL = os.getenv("CODEX_WRAPPER_URL", "http://host.docker.internal:9001/codex")
+CLAUDE_URL = os.getenv("CLAUDE_WRAPPER_URL", "http://host.docker.internal:9002/claude")
 HTTP_TIMEOUT = int(os.getenv("HTTP_TIMEOUT_SECONDS", "60"))  # デフォルト60秒（CLI処理に時間がかかる場合があるため）
 AUTH_TOKEN = os.getenv("MCP_AUTH_TOKEN")
-MAX_BODY_BYTES = 32 * 1024  # 32KB
-RATE_LIMIT_WINDOW = 60
-RATE_LIMIT_MAX_REQUESTS = 20
+MAX_BODY_BYTES = int(os.getenv("MCP_MAX_BODY_BYTES", str(32 * 1024)))  # 32KB
+RATE_LIMIT_WINDOW = int(os.getenv("MCP_RATE_WINDOW", "60"))
+RATE_LIMIT_MAX_REQUESTS = int(os.getenv("MCP_RATE_MAX_REQUESTS", "20"))
+MAX_HISTORY_TURNS = int(os.getenv("MCP_MAX_HISTORY_TURNS", "50"))
 _rate_log: Dict[str, List[float]] = {}
 
 
+ROLE_INSTRUCTIONS = {
+    "default": {
+        "codex": "",
+        "claude": "",
+    },
+    "critique": {
+        "codex": "You are the proposer. Provide concrete solutions with rationale and code sketches when helpful.",
+        "claude": "You are the critic. Stress-test the proposal, call out risks, edge cases, and offer concise fixes.",
+    },
+    "consensus": {
+        "codex": "You are the proposer. Move toward a practical plan and be open to integrating critique.",
+        "claude": "You are the synthesizer. Reconcile differences, highlight agreements, and steer to a shared plan.",
+    },
+}
+
+
 Role = Literal["user", "assistant", "system"]
+Mode = Literal["default", "critique", "consensus"]
 
 
 @dataclass
@@ -53,6 +75,7 @@ class DebateSession:
     history: List[Turn] = field(default_factory=list)
     user_id: Optional[str] = None
     next_responder: Literal["codex", "claude"] = "codex"  # Track who should respond next
+    mode: Mode = "default"
 
 
 # Session storage: user_id -> DebateSession
@@ -61,11 +84,12 @@ _sessions: Dict[str, DebateSession] = {}
 
 class StartDebateRequest(BaseModel):
     initial_prompt: str = Field(..., min_length=1, max_length=8192)  # Limit prompt size
+    mode: Mode = Field(default="default", description="Debate style mode")
 
 
 class Decision(BaseModel):
     type: Literal["adopt_codex", "adopt_claude", "custom_instruction"]
-    custom_text: Optional[str] = Field(None, description="Used when type is custom_instruction")
+    custom_text: Optional[str] = Field(None, description="Used when type is custom_instruction", max_length=8192)
 
     def validated_text(self) -> str:
         if self.type == "custom_instruction":
@@ -85,6 +109,7 @@ class TurnResponse(BaseModel):
     claude_output: Optional[str] = None
     responder: Literal["codex", "claude"]
     next_responder: Optional[Literal["codex", "claude"]] = None
+    mode: Optional[Mode] = None
 
 
 class StatusResponse(BaseModel):
@@ -111,6 +136,17 @@ def _get_user_id(request: Request) -> str:
         return user_id_header
     # Generate a new user ID if not provided
     return str(uuid.uuid4())
+
+
+def _trim_history(session: DebateSession) -> None:
+    """Keep history within configured bounds."""
+    if len(session.history) > MAX_HISTORY_TURNS:
+        session.history[:] = session.history[-MAX_HISTORY_TURNS:]
+
+
+def _mode_instruction_for(model: Literal["codex", "claude"], mode: Mode) -> str:
+    model_map = ROLE_INSTRUCTIONS.get(mode, ROLE_INSTRUCTIONS["default"])
+    return model_map.get(model, "")
 
 
 @app.middleware("http")
@@ -147,14 +183,17 @@ def call_model(url: str, prompt: str, auth_token: Optional[str] = None) -> str:
     if auth_token:
         headers["X-Auth-Token"] = auth_token
     try:
+        logger.debug("Calling model wrapper", extra={"url": url})
         resp = requests.post(url, json=payload, headers=headers, timeout=HTTP_TIMEOUT)
         resp.raise_for_status()
     except requests.exceptions.RequestException as exc:
+        logger.error("Failed to reach model wrapper", extra={"url": url, "error": str(exc)})
         raise HTTPException(status_code=502, detail=f"failed to reach model wrapper: {exc}") from exc
 
     data: Dict[str, str] = resp.json()
     output = data.get("output")
     if output is None:
+        logger.error("Wrapper response missing output", extra={"url": url})
         raise HTTPException(status_code=500, detail="wrapper response missing 'output'")
     return output
 
@@ -164,6 +203,7 @@ def build_next_prompt(
     last_turn: Turn,
     next_responder: Literal["codex", "claude"],
     conversation_history: List[Turn],
+    mode: Mode,
 ) -> str:
     """Build prompt for the next responder, including conversation history."""
     # Build conversation context from history
@@ -197,6 +237,7 @@ def build_next_prompt(
         prompt_parts.append(f"\n{last_response}")
     if context:
         prompt_parts.append(f"\n\nPrevious conversation:\n{context}")
+    prompt_parts.append(f"\n\n{_mode_instruction_for(next_responder, mode)}")
     prompt_parts.append("\n\nRespond concisely and continue the debate.")
     
     return "".join(prompt_parts)
@@ -218,12 +259,15 @@ async def start_debate(
     if session is None:
         session = DebateSession(user_id=user_id, next_responder="codex")
         _sessions[user_id] = session
+    session.mode = body.mode
 
     prompt = body.initial_prompt
     wrapper_auth = os.getenv("WRAPPER_AUTH_TOKEN")
     
     # Step 1: Codex responds first
-    codex_output = call_model(CODEX_URL, prompt, auth_token=wrapper_auth)
+    codex_instruction = _mode_instruction_for("codex", session.mode)
+    codex_prompt = f"{codex_instruction}\n\n{prompt}" if codex_instruction else prompt
+    codex_output = call_model(CODEX_URL, codex_prompt, auth_token=wrapper_auth)
     turn1 = Turn(
         user_instruction=prompt,
         codex_output=codex_output,
@@ -233,7 +277,9 @@ async def start_debate(
     session.history.append(turn1)
     
     # Step 2: Claude responds to Codex's output
-    claude_prompt = f"Codex said: {codex_output}\n\nRespond to Codex's point and continue the discussion."
+    claude_instruction = _mode_instruction_for("claude", session.mode)
+    claude_prompt_base = f"Codex said: {codex_output}\n\nRespond to Codex's point and continue the discussion."
+    claude_prompt = f"{claude_instruction}\n\n{claude_prompt_base}" if claude_instruction else claude_prompt_base
     claude_output = call_model(CLAUDE_URL, claude_prompt, auth_token=wrapper_auth)
     turn2 = Turn(
         user_instruction=claude_prompt,
@@ -242,6 +288,7 @@ async def start_debate(
         responder="claude",
     )
     session.history.append(turn2)
+    _trim_history(session)
     session.active = True
     session.next_responder = "codex"  # Next turn, Codex responds
 
@@ -255,6 +302,7 @@ async def start_debate(
                 "claude_output": claude_output,
                 "responder": "claude",  # Last responder
                 "next_responder": "codex",
+                "mode": session.mode,
             },
         },
         headers={"X-User-ID": user_id},
@@ -278,7 +326,7 @@ async def step(
     next_responder = session.next_responder
     
     # Build prompt for the next responder
-    next_prompt = build_next_prompt(body.decision, last_turn, next_responder, session.history)
+    next_prompt = build_next_prompt(body.decision, last_turn, next_responder, session.history, session.mode)
 
     wrapper_auth = os.getenv("WRAPPER_AUTH_TOKEN")
     
@@ -303,6 +351,7 @@ async def step(
         session.next_responder = "codex"  # Next turn, Codex responds
     
     session.history.append(turn)
+    _trim_history(session)
 
     return JSONResponse(
         status_code=200,
@@ -314,6 +363,7 @@ async def step(
                 "claude_output": turn.claude_output,
                 "responder": turn.responder,
                 "next_responder": session.next_responder,
+                "mode": session.mode,
             },
         },
         headers={"X-User-ID": user_id},
@@ -353,6 +403,7 @@ async def health(request: Request) -> dict:
             "active": session.active,
             "turns": len(session.history),
             "user_id": user_id,
+            "mode": session.mode,
         }
     return {"status": "ok", "active": False, "turns": 0}
 

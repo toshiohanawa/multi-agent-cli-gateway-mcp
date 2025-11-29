@@ -10,7 +10,7 @@ cd "$SCRIPT_DIR"
 
 # ホストラッパーを起動
 echo "ホストラッパーを起動中..."
-bash "$PROJECT_ROOT/mcp-server/start-host-wrappers.sh"
+bash "$SCRIPT_DIR/start-host-wrappers.sh"
 
 # Docker Composeを起動
 echo ""
@@ -27,4 +27,3 @@ echo "  - MCPブリッジ:      http://localhost:8080"
 echo ""
 echo "ログを確認: docker compose logs -f"
 echo "停止するには: docker compose down"
-
